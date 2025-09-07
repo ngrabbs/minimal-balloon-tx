@@ -5,6 +5,11 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
 # Pico SDK
+set(PICO_SDK_PATH "/Users/nick/Documents/main_backup/MSU_CubeSat/pico-sdk")
+set(PICO_PLATFORM "rp2040")
+set(PICO_BOARD "pico")
+#set(PICO_PLATFORM "rp2350")
+#set(PICO_BOARD "pico2")
 include($ENV{PICO_SDK_PATH}/pico_sdk_init.cmake)
 pico_sdk_init()
 
