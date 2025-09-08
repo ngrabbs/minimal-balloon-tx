@@ -1,28 +1,27 @@
-#include "pico/stdlib.h"
-#include "hardware/uart.h"
-#include "hardware/gpio.h"
 #include "FreeRTOS.h"
 #include "task.h"
-#include "queue.h"
 #include "logging.h"
-#include "msg_bus.h"
-#include "boards/pico_wspr_horus.h"
+#include "gps_hw.h"
 
-static void gps_thread(void *arg) {
-  (void)arg; char line[120]; size_t idx=0;
-  for(;;){
-    while (uart_is_readable(UART_GPS_ID)) {
-      char c = uart_getc(UART_GPS_ID);
-      if (c=='\n' || idx>=sizeof(line)-1) { line[idx]=0; idx=0; /* parse NMEA GGA/RMC here */ }
-      else if (c!='\r') line[idx++]=c;
-    }
-    vTaskDelay(pdMS_TO_TICKS(5));
-  }
+static bool started = false;
+
+static void gps_boot_task(void *arg){
+  (void)arg;
+  LOGI("gps: boot task running");
+  // Now it's safe to use vTaskDelay() inside any called functions
+  gps_enter_monitor_mode();
+  LOGI("gps: monitor mode requested");
+  vTaskDelete(NULL); // done
 }
 
 void task_gps_start(void){
-  uart_init(UART_GPS_ID, UART_GPS_BAUD);
-  gpio_set_function(UART_GPS_TX, GPIO_FUNC_UART);
-  gpio_set_function(UART_GPS_RX, GPIO_FUNC_UART);
-  xTaskCreate(gps_thread, "gps", 1024, NULL, tskIDLE_PRIORITY+2, NULL);
+  if (started) { LOGW("gps: task_gps_start called twice; ignoring"); return; }
+  started = true;
+
+  LOGI("gps: scheduling boot task");
+  BaseType_t ok = xTaskCreate(
+    gps_boot_task, "gps_boot", 1024, NULL, tskIDLE_PRIORITY+2, NULL);
+  if (ok != pdPASS) {
+    LOGE("gps: FAILED to create boot task");
+  }
 }
