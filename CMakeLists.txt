@@ -38,6 +38,7 @@ add_executable(${PROJECT_NAME}
   src/main.c
   src/timebase.c
   src/msg_bus.c
+  src/radio_hw_stub.c
   src/tasks/task_console.c
   src/tasks/task_gps.c
   src/tasks/task_radio_arbiter.c

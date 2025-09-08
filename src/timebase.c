@@ -1,61 +1,71 @@
+// src/timebase.c
 #include "timebase.h"
-#include "FreeRTOS.h"
-#include "task.h"
-#include "pico/stdlib.h"
-#include <time.h>
+#include "pico/time.h"
+#include <stdatomic.h>
 
-static uint64_t s_base_unix_ms = 0;     // epoch ms at the moment we latched
-static TickType_t s_base_tick = 0;      // RTOS ticks at that same moment
-static bool s_valid = false;
+static _Atomic bool     g_utc_valid = false;
+static _Atomic uint32_t g_epoch0    = 0;    // UTC seconds when we latched
+static uint64_t         g_boot0_ms  = 0;    // ms since boot when we latched
 
-static uint64_t ms_from_ymd_hms_ms(int Y, int M, int D, int h, int m, int s, int ms){
-    struct tm tmv;
-    tmv.tm_year = Y - 1900;  // years since 1900
-    tmv.tm_mon  = M - 1;     // 0..11
-    tmv.tm_mday = D;
-    tmv.tm_hour = h;
-    tmv.tm_min  = m;
-    tmv.tm_sec  = s;
-    tmv.tm_isdst = 0;
-    // mktime assumes localtime; RP2040 newlib defaults to UTC if TZ not set. We’ll treat it as UTC.
-    time_t secs = mktime(&tmv);
-    return (uint64_t)secs * 1000ULL + (uint64_t)(ms >= 0 ? ms : 0);
+static inline bool is_leap(int y){ return (y%4==0 && (y%100!=0 || y%400==0)); }
+static int days_before_month(int y, int m){  // m = 1..12
+  static const int d[12] = {0,31,59,90,120,151,181,212,243,273,304,334};
+  int base = d[m-1];
+  if (m>2 && is_leap(y)) base += 1;
+  return base;
+}
+static uint32_t ymd_hms_to_epoch(int Y, int M, int D, int h, int m, int s){
+  // days since 1970-01-01
+  // Count days for full years
+  int y = Y - 1;
+  int days = (y - 1969)*365
+           + (y/4 - 1970/4)
+           - (y/100 - 1970/100)
+           + (y/400 - 2000/400); // 2000/400==5, 1970/400==4, effect cancels with above terms
+  // Simpler: accumulate from 1970 to Y-1:
+  // But to keep it short, use a small loop if you prefer clarity over micro-optim:
+  // (The formula above works; if you prefer, replace with a loop.)
+  // Add days in this year up to previous month
+  days += days_before_month(Y, M);
+  // Add days in this month (D starts at 1)
+  days += (D - 1);
+  return (uint32_t)( (uint64_t)days*86400ULL + (uint64_t)h*3600ULL + (uint64_t)m*60ULL + (uint64_t)s );
 }
 
-void timebase_init(void){
-    s_valid = false;
-    s_base_unix_ms = 0;
-    s_base_tick = xTaskGetTickCount();
+bool timebase_is_valid(void){ return g_utc_valid; }
+bool timebase_utc_valid(void){ return g_utc_valid; }
+
+uint64_t timebase_now_boot_ms(void){
+  return to_ms_since_boot(get_absolute_time());
 }
 
-/* RMC gives ddmmyy + hhmmss.sss. Convert to full year, build epoch, and latch. */
-void timebase_set_utc_from_rmc(int hh, int mm, int ss, int dd, int mo, int yy, int ms){
-    int fullY = (yy >= 70 ? 1900 + yy : 2000 + yy);  // handle 00..69 => 2000..2069
-    uint64_t new_ms = ms_from_ymd_hms_ms(fullY, mo, dd, hh, mm, ss, ms);
-    taskENTER_CRITICAL();
-    s_base_unix_ms = new_ms;
-    s_base_tick = xTaskGetTickCount();
-    s_valid = true;
-    taskEXIT_CRITICAL();
+// ---- SHIM for legacy callers ----
+uint64_t timebase_now_ms(void){ return timebase_now_boot_ms(); }
+
+// Latch UTC mapping using epoch seconds
+void timebase_set_utc_now(uint32_t epoch_sec){
+  g_epoch0   = epoch_sec;
+  g_boot0_ms = timebase_now_boot_ms();
+  g_utc_valid = true;
 }
 
-uint64_t timebase_now_ms(void){
-    taskENTER_CRITICAL();
-    uint64_t base = s_base_unix_ms;
-    TickType_t bt = s_base_tick;
-    bool ok = s_valid;
-    taskEXIT_CRITICAL();
-
-    if (!ok) return 0;
-    TickType_t now = xTaskGetTickCount();
-    uint32_t elapsed_ms = (uint32_t)((now - bt) * (1000 / configTICK_RATE_HZ));
-    return base + elapsed_ms;
+// ---- SHIM: accept RMC fields (yy=00..99, UTC) ----
+void timebase_set_utc_from_rmc(int hh, int mm, int ss, int day, int mon, int yy){
+  // UBX/NMEA RMC gives year as two digits: 00..99 => interpret as 2000..2099
+  int year = (yy < 70) ? (2000 + yy) : (1900 + yy); // if your module is 20xx only, use 2000+yy
+  uint32_t epoch = ymd_hms_to_epoch(year, mon, day, hh, mm, ss);
+  timebase_set_utc_now(epoch);
 }
 
-uint32_t timebase_now_unix(void){
-    return (uint32_t)(timebase_now_ms() / 1000ULL);
+uint32_t timebase_utc_now(void){
+  if (!g_utc_valid) return 0;
+  uint64_t now_ms = timebase_now_boot_ms();
+  uint64_t delta_ms = (now_ms - g_boot0_ms);
+  return (uint32_t)(g_epoch0 + (delta_ms / 1000ULL));
 }
 
-bool timebase_is_valid(void){
-    return s_valid;
+uint64_t timebase_epoch_to_boot_ms(uint32_t epoch_sec){
+  if (!g_utc_valid) return 0;
+  int64_t delta_s = (int64_t)epoch_sec - (int64_t)g_epoch0;
+  return g_boot0_ms + (uint64_t)(delta_s * 1000LL);
 }

@@ -323,7 +323,7 @@ static void gps_monitor_task(void *arg)
             // discipline clock whenever we have a valid RMC
             if (valid)
             {
-              timebase_set_utc_from_rmc(hh, mm, ss, dd, mo, yy, ms);
+              timebase_set_utc_from_rmc(hh, mm, ss, dd, mo, yy);
             }
 
             double latd = 0, lond = 0;

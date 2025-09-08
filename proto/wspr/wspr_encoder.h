@@ -29,3 +29,8 @@ void     wspr_minutes_mask_set(uint32_t mask);
 bool wspr_should_tx_in_minute(int even_minute); // pass 0..59 (must be even)
 
 void wspr_update_grid_from_latlon(double lat_deg, double lon_deg);
+
+// Optional setters exposed for console/GPS integration:
+void wspr_set_callsign(const char *cs);
+void wspr_set_grid(const char *grid);
+void wspr_set_power_dbm(int dbm);
